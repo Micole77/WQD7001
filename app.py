@@ -515,6 +515,14 @@ def render_prediction_result():
     </div>
     """, unsafe_allow_html=True)
     
+    # Feature-contribution plot
+    st.header("🔍 Feature Contribution Plot")
+    st.image(
+        "feature-contribution plot.png",  
+        caption="Feature-contribution Plot",      
+        width=1300            
+    )
+
     # Recommendations
     st.subheader("📋 Recommendations")
     for i, rec in enumerate(result['recommendations']):
