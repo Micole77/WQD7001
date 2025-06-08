@@ -447,7 +447,7 @@ def simulate_prediction():
     df = df[model_columns]
 
     # Load the actual model (XGBoost)
-    model_path = Path("xgboost_model.pkl")
+    model_path = Path("xgboost_model_new.pkl")
     model = load_xgboost_model(model_path)
 
     if model is None:
