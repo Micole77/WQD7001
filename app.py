@@ -6,6 +6,7 @@ from streamlit_extras.stylable_container import stylable_container
 from typing import Dict, List, Tuple
 import warnings
 import numpy as np
+import sklearn
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -155,7 +156,7 @@ STEPS = [
     {
         "title": "Personal Information",
         "icon": "👤",
-        "fields": ['age', 'sex', 'bmi']
+        "fields": ['age', 'sex', 'bmi', 'income', 'country']
     },
     {
         "title": "Medical History", 
@@ -180,6 +181,13 @@ STEPS = [
 ]
 
 # Field configurations
+COUNTRIES = [
+    'Argentina','Australia','Brazil','Canada','China','Colombia','France',
+    'Germany','India','Italy','Japan','New Zealand','Nigeria','South Africa',
+    'South Korea','Spain','Thailand','United Kingdom','United States','Vietnam'
+]
+COUNTRY_ENCODING = {country: idx for idx, country in enumerate(COUNTRIES)}
+
 FIELD_CONFIGS = {
     'age': {'type': 'number', 'label': 'Age (years)', 'min_val': 0, 'max_val': 100, 'default': 50},
     'sex': {'type': 'select', 'label': 'Sex', 'options': ['Male', 'Female'], 'values': [1, 0]},
@@ -201,15 +209,17 @@ FIELD_CONFIGS = {
     'exercise_hours_per_week': {'type': 'number', 'label': 'Exercise Hours per Week', 'min_val': 0.0, 'max_val': 50.0, 'default': 3.0, 'step': 0.5},
     'physical_activity_days_per_week': {'type': 'number', 'label': 'Physical Activity Days per Week', 'min_val': 0.0, 'max_val': 7.0, 'default': 3.0, 'step': 0.5},
     'sedentary_hours_per_day': {'type': 'number', 'label': 'Sedentary Hours per Day', 'min_val': 0.0, 'max_val': 24.0, 'default': 8.0, 'step': 0.5},
-    'sleep_hours_per_day': {'type': 'number', 'label': 'Sleep Hours per Day', 'min_val': 0, 'max_val': 12, 'default': 7}
+    'sleep_hours_per_day': {'type': 'number', 'label': 'Sleep Hours per Day', 'min_val': 0, 'max_val': 12, 'default': 7},
+    'income': {'type': 'number', 'label': 'Income (USD per year)', 'min_val': 20000, 'max_val': 300000, 'default': 150000, 'step': 1000},
+    'country': {'type': 'select', 'label': 'Country of Residence', 'options': COUNTRIES, 'values': list(range(len(COUNTRIES))), 'default': 0}
 }
 
 # --------------------------------------------------
 # Helper functions
 # --------------------------------------------------
 @st.cache_resource(show_spinner=False)
-def load_logistic_regression(model_path: Path):
-    """Load logistic regression model"""
+def load_xgboost_model(model_path: Path):
+    """Load XGBoost model"""
     if not model_path.exists():
         return None
     try:
@@ -342,8 +352,16 @@ def render_field(field_key: str):
         current_option = options[0]  # default to first option
         if current_value is not None:
             try:
-                current_index = values.index(current_value)
-                current_option = options[current_index]
+                if field_key == 'country':
+                    if isinstance(current_value, str):
+                        current_index = options.index(current_value)
+                        current_option = current_value
+                    else:
+                        current_index = current_value
+                        current_option = options[current_index] if 0 <= current_index < len(options) else options[0]
+                else:
+                    current_index = values.index(current_value)
+                    current_option = options[current_index]
             except ValueError:
                 current_option = options[0]
         
@@ -381,40 +399,65 @@ def validate_current_step() -> Tuple[bool, List[str]]:
 
 def simulate_prediction():
     """Simulate heart attack risk prediction"""
-    # Create DataFrame with proper column names
-    data = {}
-    field_mapping = {
-        'family_history': 'family history',
-        'previous_heart_problems': 'previous heart problems', 
-        'medication_use': 'medication use',
-        'heart_rate': 'heart rate',
-        'systolic_pressure': 'systolic pressure',
-        'diastolic_pressure': 'diastolic pressure',
-        'alcohol_consumption': 'alcohol consumption',
-        'stress_level': 'stress level',
-        'exercise_hours_per_week': 'exercise hours per week',
-        'physical_activity_days_per_week': 'physical activity days per week',
-        'sedentary_hours_per_day': 'sedentary hours per day',
-        'sleep_hours_per_day': 'sleep hours per day'
-    }
+
+    model_columns = [ 
+        'age', 'sex', 'bmi', 'income', 'diabetes', 'family history',
+        'previous heart problems', 'medication use', 'heart rate',
+        'systolic pressure', 'diastolic pressure', 'cholesterol', 'triglycerides',
+        'smoking', 'obesity', 'alcohol consumption', 'stress level',
+        'exercise hours per week', 'physical activity days per week',
+        'sedentary hours per day', 'sleep hours per day', 'diet_Average',
+        'diet_Healthy', 'diet_Unhealthy', 'country_Argentina','country_Australia',
+        'country_Brazil','country_Canada','country_China','country_Colombia',
+        'country_France','country_Germany','country_India','country_Italy',
+        'country_Japan','country_New Zealand','country_Nigeria','country_South Africa'
+    ]
+    #,'country_South Korea','country_Spain','country_Thailand','country_United Kingdom', 'country_United States','country_Vietnam'
+    # Create a dictionary with all model columns initialized to 0
+    data = {col: 0 for col in model_columns}
     
+    # Get the list of countries from your FIELD_CONFIGS
+    countries_list = FIELD_CONFIGS['country']['options']
+
+    # Update the dictionary with user input from the form
     for field_key, value in st.session_state.form_data.items():
-        # Map field names to match model expectations
-        model_field = field_mapping.get(field_key, field_key)
-        data[model_field] = value
-    
+        if field_key == 'country':
+            # Handle one-hot encoding for country
+            selected_country_name = countries_list[value]
+            # Construct the column name, e.g., 'country_United States'
+            country_column_name = f"country_{selected_country_name}"
+            if country_column_name in data:
+                data[country_column_name] = 1
+        elif field_key == 'diet':
+            # Handle one-hot encoding for diet
+            if value == 2: data['diet_Healthy'] = 1
+            elif value == 1: data['diet_Average'] = 1
+            else: data['diet_Unhealthy'] = 1
+        else:
+            # Map other field names to match model expectations
+            # (You may need to adjust these based on your model's actual feature names)
+            model_field = field_key.replace('_', ' ')
+            if model_field in data:
+                data[model_field] = value
+            elif field_key in data: # For fields without spaces
+                data[field_key] = value
+
+    # Create a DataFrame with the correct columns and order
     df = pd.DataFrame([data])
-    
-    # Load the actual model (Logistic Regression)
-    model_path = Path("logistic_regression_model.pkl")
-    model = load_logistic_regression(model_path)
-    if model is not None:
+    df = df[model_columns]
+
+    # Load the actual model (XGBoost)
+    model_path = Path("xgboost_model.pkl")
+    model = load_xgboost_model(model_path)
+
+    if model is None:
+        raise FileNotFoundError(f"Could not load model at {model_path}")
+    else: 
+        # Run the prediction
         probability = model.predict_proba(df)[0][1]
         prediction = int(model.predict(df)[0])
         risk_score = probability * 100
-    else:
-        raise FileNotFoundError(f"Could not load model at {model_path}")
-    
+
     # Determine risk level
     if risk_score > 70:
         risk_level = 'High'
